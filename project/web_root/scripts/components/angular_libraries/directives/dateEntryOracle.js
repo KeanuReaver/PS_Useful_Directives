@@ -8,6 +8,7 @@ define(function(require) {
             require: 'ngModel',
             link: function(scope, element, attrs, ngModel) {
                 const outputFormat = attrs.dateEntryOutput || element.attr('data-date-entry-output') || 'oracle';
+                const pivot = Number(attrs.dateEntryPivot || element.attr('data-date-entry-pivot') || 70);
 
                 // Inject style once
                 (function injectStyles() {
@@ -29,58 +30,75 @@ define(function(require) {
                     document.head.appendChild(style);
                 })();
 
-                // Format date for display: always MM/dd/yyyy
+                function toFourDigitYear(yy) {
+                    const n = Number(yy);
+                    if (yy.length === 4) return n;
+                    return n <= pivot ? 2000 + n : 1900 + n;
+                }
+
+                // Parse string into { yyyy, mm, dd } or null
+                function parseAnyDateString(s) {
+                    if (!s) return null;
+                    const str = String(s).trim();
+
+                    // ISO-ish: 2024-08-05 or 2024-08-05T...
+                    let m = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+                    if (m) {
+                        const [, yyyy, mm, dd] = m;
+                        return { yyyy: Number(yyyy), mm: Number(mm), dd: Number(dd) };
+                    }
+
+                    // Flexible: M/D/YYYY, M-D-YYYY, MM-dd-yy, etc.
+                    m = str.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2}|\d{4})$/);
+                    if (m) {
+                        let [, mm, dd, y] = m;
+                        const yyyy = toFourDigitYear(y);
+                        return { yyyy, mm: Number(mm), dd: Number(dd) };
+                    }
+
+                    return null;
+                }
+
+                function toDisplay({ yyyy, mm, dd }) {
+                    return `${String(mm).padStart(2, '0')}/${String(dd).padStart(2, '0')}/${String(yyyy)}`;
+                }
+
+                // Display in input: always MM/DD/YYYY
                 ngModel.$formatters.push(function(value) {
                     if (!value) return '';
-
-                    // Normalize input: extract date part
-                    const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
-                    if (match) {
-                        const [, yyyy, mm, dd] = match;
-                        return `${mm}/${dd}/${yyyy}`;
-                    }
-
-                    // Try to parse MM/dd/yyyy input
-                    const alt = String(value).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-                    if (alt) {
-                        return `${alt[1].padStart(2, '0')}/${alt[2].padStart(2, '0')}/${alt[3]}`;
-                    }
-
-                    return value; // fallback
+                    const parsed = parseAnyDateString(value);
+                    return parsed ? toDisplay(parsed) : String(value);
                 });
 
-                // Format for saving
+                // Save to model: oracle (YYYY-MM-DD) or psq (MM/DD/YYYY)
                 ngModel.$parsers.push(function(value) {
                     if (!value) return '';
+                    const parsed = parseAnyDateString(value);
+                    if (!parsed) return ngModel.$modelValue;
 
-                    const parts = value.trim().split('/');
-                    if (parts.length !== 3) return ngModel.$modelValue;
-
-                    const [mm, dd, yyyy] = parts;
+                    const { yyyy, mm, dd } = parsed;
                     if (outputFormat === 'psq') {
-                        return `${mm.padStart(2, '0')}/${dd.padStart(2, '0')}/${yyyy}`;
+                        return `${String(mm).padStart(2, '0')}/${String(dd).padStart(2, '0')}/${yyyy}`;
                     } else {
-                        return `${yyyy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
+                        return `${yyyy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
                     }
                 });
 
-                // Add jQuery UI datepicker
+                // jQuery UI datepicker
                 $j(element).datepicker({
-                    dateFormat: 'mm/dd/yy',
+                    dateFormat: 'mm/dd/yy', // jQuery UI: 'yy' is 4-digit year
                     onSelect: function(dateText) {
                         ngModel.$setViewValue(dateText);
                         ngModel.$render();
                     }
                 });
 
-                // Optional: arrow key day adjust
                 element.on('keydown', function(event) {
                     const viewValue = element.val();
-                    const m = viewValue.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-                    if (!m) return;
+                    const p = parseAnyDateString(viewValue);
+                    if (!p) return;
 
-                    let [ , mm, dd, yyyy ] = m.map(s => parseInt(s, 10));
-                    const date = new Date(yyyy, mm - 1, dd);
+                    const date = new Date(p.yyyy, p.mm - 1, p.dd);
                     if (isNaN(date)) return;
 
                     if (event.key === 'ArrowUp') {
@@ -91,7 +109,11 @@ define(function(require) {
                         return;
                     }
 
-                    const formatted = `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}/${date.getFullYear()}`;
+                    const formatted = toDisplay({
+                        yyyy: date.getFullYear(),
+                        mm: date.getMonth() + 1,
+                        dd: date.getDate()
+                    });
                     ngModel.$setViewValue(formatted);
                     ngModel.$render();
                     event.preventDefault();
